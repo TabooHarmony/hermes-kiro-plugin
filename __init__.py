@@ -137,6 +137,7 @@ def _setup_gateway_env() -> bool:
         f'PROXY_API_KEY="{_PROXY_KEY}"\n'
         f'REFRESH_TOKEN="{token}"\n'
         f'KIRO_API_REGION="us-east-1"\n'
+        f'ACCOUNT_SYSTEM=true\n'
         f'DEBUG_MODE=errors\n'
         f'TRUNCATION_RECOVERY=true\n'
     )
