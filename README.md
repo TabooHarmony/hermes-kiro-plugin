@@ -2,9 +2,10 @@
 
 <img width="212" height="212" alt="image" src="https://github.com/user-attachments/assets/a39f48fe-f1b7-46b8-a997-c583658cb0e0" />
 
+Native model-provider plugin for **paid Kiro plans**, bringing various models, includuding Opus and Sonnet, through your existing Kiro subscription. Appears directly in the `hermes model` picker
 
-Native model-provider plugin for **paid** Kiro plans, bringing various models, includuding Opus and Sonnet, through your existing Kiro subscription. Appears directly in the `hermes model` picker
-Built on [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway) to bridge Kiro's models into Hermes. This project implements this into user-friendly plugin. 
+Built on [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway) to bridge Kiro's models into Hermes. This project implements this into a user-friendly plugin. 
+
 Select Kiro from the model picker and the gateway starts automatically.
 
 ## Install
@@ -17,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/TabooHarmony/hermes-kiro-plugin/mas
 ## Setup
 
 Login once via kiro-cli (pick Google or GitHub):
-
+> ⚠️ Worker ID and Enterprise sessions are not currently supported.
 ```bash
 curl -fsSL https://cli.kiro.dev/install | bash
 kiro-cli login --use-device-flow
@@ -51,3 +52,7 @@ The gateway is [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway), a 
 - [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway): first to connect Kiro models to Hermes, helped me troubleshoot.
 - [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway): the underlying gateway proxy.
 - [NousResearch](https://github.com/NousResearch/hermes-agent): the agent runtime this plugin extends.
+
+## License 
+
+MIT. PRs are appreciated to help me clean this up.
