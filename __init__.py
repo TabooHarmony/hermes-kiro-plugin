@@ -267,8 +267,7 @@ kiro = KiroProfile(
     env_vars=("KIRO_PROXY_API_KEY",),  # gateway proxy key (auto-configured)
     display_name="Kiro",
     description=(
-        "Kiro — Claude Opus 4.7, Sonnet 4.6, DeepSeek 3.2, and more "
-        "via Kiro Pro subscription"
+        "Kiro Pro (Claude, MiniMax, GLM — OAuth login)"
     ),
     signup_url="https://kiro.dev",
     base_url=_GATEWAY_URL,
@@ -304,7 +303,16 @@ except Exception:
     pass  # OS/env issue — non-critical
 
 # ── Pre-warm: attempt setup at import time (non-blocking) ─────────────────
-if _gateway_installed() and _setup_gateway_env():
-    threading.Thread(
-        target=_start_gateway, daemon=True
-    ).start()
+if _gateway_installed():
+    if _setup_gateway_env():
+        threading.Thread(target=_start_gateway, daemon=True).start()
+    elif not _gateway_healthy() and _KIRO_CLI_DB.exists():
+        # Kiro-cli exists but no token — user needs to login
+        pass  # quiet — fetch_models will print instructions when called
+    elif not _KIRO_CLI_DB.exists() and not _is_kiro_cli_installed():
+        print(
+            "\n  Kiro provider loaded but kiro-cli is not installed.\n"
+            "  Install: curl -fsSL https://cli.kiro.dev/install | bash\n"
+            "  Then: kiro-cli login --use-device-flow\n",
+            flush=True,
+        )
