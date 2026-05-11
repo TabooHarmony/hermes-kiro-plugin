@@ -300,6 +300,125 @@ def _gateway_healthy() -> bool:
         return False
 
 
+def _auth_healthy() -> bool:
+    """Check if the gateway's kiro auth is working (models returned)."""
+    try:
+        req = urllib.request.Request(
+            f"http://localhost:{_GATEWAY_PORT}/v1/models",
+            headers={"Authorization": f"Bearer {_PROXY_KEY}"},
+        )
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            data = json.loads(resp.read())
+            models = data.get("data", [])
+            return len(models) > 0
+    except Exception:
+        return False
+
+
+def _clear_stale_tokens() -> None:
+    """Remove consumed/expired tokens so re-login can proceed."""
+    env_path = _GATEWAY_DIR / ".env"
+    if env_path.exists():
+        import re
+        content = env_path.read_text()
+        content = re.sub(r'REFRESH_TOKEN="[^"]*"', 'REFRESH_TOKEN=""', content)
+        env_path.write_text(content)
+        logger.info("Kiro: cleared stale REFRESH_TOKEN from .env")
+
+    if _CREDS_JSON.exists():
+        _CREDS_JSON.unlink()
+        logger.info("Kiro: removed stale credentials.json")
+
+
+def _restart_gateway() -> bool:
+    """Kill and restart the gateway process."""
+    pid_file = _PID_FILE
+    if pid_file.exists():
+        try:
+            pid = int(pid_file.read_text().strip())
+            os.kill(pid, 0)  # check if alive
+            os.kill(pid, 15)  # SIGTERM
+            time.sleep(1)
+            try:
+                os.kill(pid, 0)
+                os.kill(pid, 9)  # SIGKILL
+            except OSError:
+                pass
+        except (OSError, ValueError):
+            pass
+        pid_file.unlink(missing_ok=True)
+
+    # Free the port
+    import socket
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.settimeout(1)
+        if s.connect_ex(("127.0.0.1", _GATEWAY_PORT)) == 0:
+            s.close()
+            subprocess.run(["fuser", "-k", f"{_GATEWAY_PORT}/tcp"],
+                         capture_output=True, timeout=5)
+            time.sleep(1)
+    finally:
+        s.close()
+
+    return _start_gateway()
+
+
+def _recover_auth() -> bool:
+    """Attempt to recover from auth failure. Returns True if recovery succeeded.
+
+    Recovery order:
+    1. Re-extract from kiro-cli SQLite (user may have re-logged in)
+    2. OIDC device flow (no interaction needed from plugin side)
+    3. Prompt user for manual re-login
+
+    Clears stale tokens before attempting recovery so the gateway picks
+    up fresh credentials on restart.
+    """
+    _clear_stale_tokens()
+
+    # Try 1: kiro-cli SQLite (user re-logged in while we were broken)
+    token = _extract_refresh_token()
+    if token:
+        logger.info("Kiro: found fresh token in kiro-cli SQLite")
+        _setup_gateway_env()
+        return _restart_gateway()
+
+    # Try 2: OIDC device flow
+    print(
+        "\n  Kiro session expired. Attempting automatic recovery...\n"
+        "  (AWS Builder ID — free tier models)\n",
+        flush=True,
+    )
+    token = _oidc_login()
+    if token:
+        _setup_gateway_env()
+        if _restart_gateway():
+            print("  Recovery successful. Models should be available.\n", flush=True)
+            return True
+
+    # Try 3: nothing worked — tell the user what to do
+    print(
+        "\n  ╔══════════════════════════════════════════════════╗\n"
+        "  ║  Kiro session expired — re-login required      ║\n"
+        "  ╠══════════════════════════════════════════════════╣\n"
+        "  ║                                              ║\n"
+        "  ║  For Pro (Opus models):                      ║\n"
+        "  ║    kiro-cli login --use-device-flow          ║\n"
+        "  ║    (pick Google or GitHub in the browser)    ║\n"
+        "  ║                                              ║\n"
+        "  ║  For Free tier:                              ║\n"
+        "  ║    Restart Hermes and select Kiro again.     ║\n"
+        "  ║    The OIDC device flow will start.          ║\n"
+        "  ║                                              ║\n"
+        "  ║  After login: restart Hermes or re-select    ║\n"
+        "  ║  Kiro in /model to reconnect.               ║\n"
+        "  ╚══════════════════════════════════════════════════╝\n",
+        flush=True,
+    )
+    return False
+
+
 def _gateway_installed() -> bool:
     """Check if kiro-gateway is cloned."""
     return (_GATEWAY_DIR / "main.py").exists()
@@ -453,7 +572,8 @@ class KiroProfile(ProviderProfile):
         """List models from the gateway, auto-setting up if needed.
 
         This is called by Hermes when the user picks Kiro in /model.
-        We use it as a natural integration point for lazy setup.
+        We use it as a natural integration point for lazy setup and
+        auth recovery.
         """
         # Step 1: clone gateway if missing
         if not _gateway_installed():
@@ -477,8 +597,22 @@ class KiroProfile(ProviderProfile):
             if not _start_gateway():
                 return None
 
-        # Step 4: fetch from gateway
+        # Step 4: auth health check + auto-recovery
+        if not _auth_healthy():
+            logger.warning("Kiro: auth unhealthy, attempting recovery...")
+            if not _recover_auth():
+                return None  # recovery failed, fallback_models shown
+
+        # Step 5: fetch from gateway
         models = super().fetch_models(api_key=_PROXY_KEY, timeout=timeout)
+        if not models:
+            # Double-check: maybe auth broke between health check and fetch
+            if not _auth_healthy():
+                logger.warning("Kiro: auth broke during fetch, retrying recovery...")
+                if not _recover_auth():
+                    return None
+                models = super().fetch_models(api_key=_PROXY_KEY, timeout=timeout)
+
         if models:
             models = _add_thinking_variants(models)
         return models
