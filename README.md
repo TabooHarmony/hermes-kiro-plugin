@@ -10,7 +10,7 @@ Select Kiro from the model picker and the gateway starts automatically.
 
 ## Install
 
-Inside your Hermes envioroment, run:
+Inside your Hermes environment, run:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TabooHarmony/hermes-kiro-plugin/master/install.sh | bash
 ```
