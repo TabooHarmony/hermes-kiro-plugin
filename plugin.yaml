@@ -1,6 +1,6 @@
 name: kiro
 kind: model-provider
-version: 1.0.0
-description: Kiro Pro — Claude Opus 4.7, Sonnet 4.6, DeepSeek 3.2, and more. Requires Kiro Pro subscription ($20/mo via Google/GitHub social login). Auto-configures from kiro-cli session.
+version: 1.1.0
+description: Kiro — Claude Opus 4.7, Sonnet 4.6, DeepSeek 3.2. Pro ($20/mo via kiro-cli) or free tier (OIDC device flow, no kiro-cli needed). Thinking mode via -thinking suffix.
 author: TabooHarmony
 homepage: https://github.com/TabooHarmony/hermes-kiro-plugin

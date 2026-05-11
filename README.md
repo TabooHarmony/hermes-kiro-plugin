@@ -1,58 +1,79 @@
 # Hermes Kiro Plugin
 
-<img width="212" height="212" alt="image" src="https://github.com/user-attachments/assets/a39f48fe-f1b7-46b8-a997-c583658cb0e0" />
+Native model-provider plugin for Kiro — Claude Opus 4.7, Sonnet 4.6, DeepSeek 3.2, and more. Appears directly in `hermes model`. No Docker required.
 
-Native model-provider plugin for **paid Kiro plans**, bringing various models, includuding Opus and Sonnet, through your existing Kiro subscription. Appears directly in the `hermes model` picker
+Two auth paths:
+- **Pro ($20/mo):** kiro-cli social login (Google/GitHub) → Opus models
+- **Free:** OIDC device flow (AWS Builder ID) → Sonnet, Haiku, DeepSeek, Qwen
 
-Built on [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway) to bridge Kiro's models into Hermes. This project implements this into a user-friendly plugin. 
+Built on [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway), the first project to bridge Kiro's models into Hermes. This plugin takes that concept native — no containers, no manual `hermes config set` commands. Select Kiro from the model picker and the gateway starts automatically.
 
-Select Kiro from the model picker and the gateway starts automatically.
+OIDC device flow inspired by [Quorinex/Kiro-Go](https://github.com/Quorinex/Kiro-Go).
 
 ## Install
 
-Inside your Hermes environment, run:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/TabooHarmony/hermes-kiro-plugin/master/install.sh | bash
 ```
 
 ## Setup
 
-Login once via kiro-cli (pick Google or GitHub):
-> ⚠️ Worker ID and Enterprise sessions are not currently supported.
+### Pro (Opus models)
+
 ```bash
 curl -fsSL https://cli.kiro.dev/install | bash
-kiro-cli login --use-device-flow
+kiro-cli login --use-device-flow     # pick Google or GitHub
+hermes model                         # select Kiro → pick a model
 ```
 
-After that, select Kiro from `hermes model` and everything configures itself:
+### Free tier (no kiro-cli needed)
 
 ```
-hermes model
-  kiro → claude-opus-4.6
+hermes model → Kiro
 ```
 
-The plugin will automatically:
-- Clones kiro-gateway
-- Extracts your refresh token from kiro-cli's local session
-- Starts the gateway on localhost:8000
-- Registers all available models
+The plugin auto-detects that no credentials exist and initiates an OIDC device flow:
+1. Prints a URL and code
+2. Visit the URL, enter the code
+3. Plugin polls for completion
+4. Gateway auto-starts
+
+## Thinking mode
+
+Append `-thinking` to any Claude model:
+
+```
+claude-opus-4.7-thinking
+claude-sonnet-4.5-thinking
+claude-haiku-4.5-thinking
+```
+
+Enables extended thinking with a default budget of 4096 tokens.
+
+## Models
+
+claude-opus-4.7   claude-sonnet-4.6   claude-sonnet-4.5   claude-haiku-4.5
+claude-opus-4.6   claude-sonnet-4     claude-3.7-sonnet    qwen3-coder-next
+claude-opus-4.5   deepseek-3.2        glm-5                minimax-m2.5 / m2.1
 
 ## Architecture
 
 ```
-kiro-cli (auth)  →  kiro-gateway (:8000)  →  Hermes (provider: kiro)
+kiro-cli / OIDC  →  kiro-gateway (:8000)  →  Hermes (provider: kiro)
      ↑                                              ↑
-  OAuth token                              OpenAI-compatible HTTP
+  auth token                              OpenAI-compatible HTTP
 ```
-
-The gateway is [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway), a FastAPI proxy that translates OpenAI chat completions into Kiro's AWS CodeWhisperer protocol.
 
 ## Credits
 
-- [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway): first to connect Kiro models to Hermes, helped me troubleshoot.
-- [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway): the underlying gateway proxy.
-- [NousResearch](https://github.com/NousResearch/hermes-agent): the agent runtime this plugin extends.
+- [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway) — first to connect Kiro to Hermes
+- [Quorinex/Kiro-Go](https://github.com/Quorinex/Kiro-Go) — OIDC device flow, thinking mode convention
+- [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway) — underlying proxy
 
-## License 
+## Troubleshooting
 
-MIT. PRs are appreciated to help me clean this up.
+**Empty model list:** Run `kiro-cli login --use-device-flow` (Pro) or select Kiro again to trigger OIDC login (free).
+
+**Gateway crash / 401:** Token stale. Re-login.
+
+**No Opus models on free tier:** Builder ID only serves Sonnet/Haiku/DeepSeek/Qwen. Pro subscription needed for Opus.

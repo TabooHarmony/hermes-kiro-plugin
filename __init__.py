@@ -1,17 +1,17 @@
-"""Kiro provider — Claude models via Kiro Pro subscription.
+"""Kiro provider — Claude models via Kiro Pro subscription or AWS Builder ID.
 
 Registers Kiro as a provider in the model picker. Handles the full setup
-chain automatically: gateway installation, auth extraction from kiro-cli,
-gateway lifecycle. No manual steps required beyond initial kiro-cli login.
+chain automatically: gateway installation, auth (social login or OIDC),
+gateway lifecycle. No manual steps required.
 
 Architecture:
-    kiro-cli (auth)  --→  kiro-gateway (:8000)  --→  Hermes (provider: kiro)
-    social login          OpenAI-compatible            /model claude-opus-4.7
+    kiro-cli (Pro) / OIDC (free)  --→  kiro-gateway (:8000)  --→  Hermes
+    social login / device flow          OpenAI-compatible            /model
 
 Setup (handled automatically by the provider):
-    1. git clone kiro-gateway (auto)
-    2. kiro-cli login --use-device-flow → browser OAuth (user does once)
-    3. Plugin extracts token, configures .env, starts gateway (auto)
+    Pro:  kiro-cli login --use-device-flow → browser OAuth
+    Free: OIDC device flow → visit URL → enter code (no kiro-cli needed)
+    Plugin extracts token, configures .env, starts gateway (auto)
 """
 
 from __future__ import annotations
@@ -22,6 +22,8 @@ import os
 import sqlite3
 import subprocess
 import threading
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
@@ -39,9 +41,24 @@ _PROXY_KEY = "hermes-kiro-gateway-proxy-key-2026"
 _KIRO_CLI_DB = Path.home() / ".local" / "share" / "kiro-cli" / "data.sqlite3"
 _GATEWAY_CLONE_LOCK = threading.Lock()
 
-
 _CREDS_JSON = _GATEWAY_DIR / "credentials.json"
 
+# ── OIDC constants ───────────────────────────────────────────────────────
+_OIDC_BASE = "https://oidc.us-east-1.amazonaws.com"
+_OIDC_START_URL = "https://view.awsapps.com/start"
+_OIDC_SCOPES = [
+    "codewhisperer:completions",
+    "codewhisperer:analysis",
+    "codewhisperer:conversations",
+    "codewhisperer:transformations",
+    "codewhisperer:taskassist",
+]
+_OIDC_GRANT_TYPES = [
+    "urn:ietf:params:oauth:grant-type:device_code",
+    "refresh_token",
+]
+
+# ── Token extraction ─────────────────────────────────────────────────────
 
 def _extract_refresh_token_from_creds_json() -> str | None:
     """Extract the most recent refresh token from credentials.json.
@@ -57,7 +74,6 @@ def _extract_refresh_token_from_creds_json() -> str | None:
         if isinstance(data, list) and data:
             token = data[0].get("refresh_token")
             if token and len(token) > 20:
-                logger.debug("Kiro: extracted refresh token from credentials.json")
                 return token
     except Exception as e:
         logger.debug("Kiro: failed to read credentials.json: %s", e)
@@ -88,7 +104,6 @@ def _extract_refresh_token() -> str | None:
                 data = json.loads(row[0])
                 rt = data.get("refresh_token")
                 if rt:
-                    logger.debug("Kiro: extracted refresh token from %s", key)
                     return rt
         db.close()
     except Exception as e:
@@ -96,12 +111,131 @@ def _extract_refresh_token() -> str | None:
     return None
 
 
+# ── OIDC device flow (AWS Builder ID — no kiro-cli needed) ───────────────
+
+def _oidc_request(method: str, path: str, body: dict | None = None,
+                  headers: dict | None = None) -> dict:
+    """Make an OIDC request. Returns parsed JSON response."""
+    url = _OIDC_BASE + path
+    data = json.dumps(body).encode() if body else None
+    req_headers = {"Content-Type": "application/json"}
+    if headers:
+        req_headers.update(headers)
+    req = urllib.request.Request(url, data=data, headers=req_headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            return json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        body = e.read().decode(errors="replace")
+        raise RuntimeError(f"OIDC {method} {path} failed: HTTP {e.code} — {body}")
+
+
+def _oidc_register_client() -> tuple[str, str]:
+    """Register an OIDC client. Returns (client_id, client_secret)."""
+    payload = {
+        "clientName": "Hermes Kiro Plugin",
+        "clientType": "public",
+        "scopes": _OIDC_SCOPES,
+        "grantTypes": _OIDC_GRANT_TYPES,
+        "issuerUrl": _OIDC_START_URL,
+    }
+    result = _oidc_request("POST", "/client/register", payload)
+    return result["clientId"], result["clientSecret"]
+
+
+def _oidc_start_device_auth(client_id: str, client_secret: str) -> dict:
+    """Start device authorization. Returns {device_code, user_code, verification_uri, interval}."""
+    payload = {
+        "clientId": client_id,
+        "clientSecret": client_secret,
+        "startUrl": _OIDC_START_URL,
+    }
+    result = _oidc_request("POST", "/device_authorization", payload)
+    return {
+        "device_code": result["deviceCode"],
+        "user_code": result["userCode"],
+        "verification_uri": result.get("verificationUri",
+                                         "https://view.awsapps.com/start"),
+        "interval": result.get("interval", 5),
+    }
+
+
+def _oidc_poll_for_token(client_id: str, client_secret: str,
+                         device_code: str, interval: int,
+                         timeout_sec: int = 120) -> dict:
+    """Poll for OIDC token. Returns {access_token, refresh_token, expires_in}.
+
+    Blocks until user completes authorization or timeout.
+    """
+    payload = {
+        "clientId": client_id,
+        "clientSecret": client_secret,
+        "grantType": "urn:ietf:params:oauth:grant-type:device_code",
+        "deviceCode": device_code,
+    }
+    deadline = time.monotonic() + timeout_sec
+    while time.monotonic() < deadline:
+        try:
+            result = _oidc_request("POST", "/token", payload)
+            return {
+                "access_token": result["accessToken"],
+                "refresh_token": result.get("refreshToken", ""),
+                "expires_in": result.get("expiresIn", 3600),
+            }
+        except RuntimeError as e:
+            msg = str(e)
+            if "authorization_pending" in msg:
+                time.sleep(interval)
+                continue
+            if "slow_down" in msg:
+                interval += 5
+                time.sleep(interval)
+                continue
+            raise
+    raise TimeoutError("OIDC authorization timed out")
+
+
+def _oidc_login() -> str | None:
+    """Run the OIDC device flow interactively. Returns refresh_token or None."""
+    try:
+        client_id, client_secret = _oidc_register_client()
+        auth = _oidc_start_device_auth(client_id, client_secret)
+
+        print(
+            f"\n  ╔══════════════════════════════════════════════╗\n"
+            f"  ║  Kiro — AWS Builder ID login               ║\n"
+            f"  ╠══════════════════════════════════════════════╣\n"
+            f"  ║                                            ║\n"
+            f"  ║  1. Open: {auth['verification_uri']}\n"
+            f"  ║  2. Enter code: {auth['user_code']}\n"
+            f"  ║                                            ║\n"
+            f"  ║  Waiting for authorization...              ║\n"
+            f"  ╚══════════════════════════════════════════════╝\n",
+            flush=True,
+        )
+
+        token = _oidc_poll_for_token(
+            client_id, client_secret,
+            auth["device_code"], auth["interval"],
+        )
+        if token.get("refresh_token"):
+            logger.info("Kiro: OIDC login successful")
+            return token["refresh_token"]
+        return None
+
+    except Exception as e:
+        logger.warning("Kiro: OIDC login failed: %s", e)
+        print(f"\n  Kiro OIDC login failed: {e}\n", flush=True)
+        return None
+
+
+# ── Gateway .env management ───────────────────────────────────────────────
+
 def _setup_gateway_env() -> bool:
     """Ensure gateway .env has REFRESH_TOKEN. Returns True if configured.
 
-    Checks credentials.json first (rotated tokens persisted by the gateway),
-    then falls back to kiro-cli SQLite. If credentials.json has a fresher
-    token than .env, the .env is updated.
+    Priority: credentials.json (rotated) → kiro-cli SQLite (social/pro) →
+    OIDC device flow (builder id / free tier).
     """
     env_path = _GATEWAY_DIR / ".env"
 
@@ -110,7 +244,6 @@ def _setup_gateway_env() -> bool:
     if creds_token and env_path.exists():
         content = env_path.read_text()
         if f'REFRESH_TOKEN="{creds_token}"' not in content:
-            # credentials.json has a rotated token — sync it to .env
             import re
             content = re.sub(
                 r'REFRESH_TOKEN="[^"]*"',
@@ -128,6 +261,15 @@ def _setup_gateway_env() -> bool:
                 return True
 
     token = _extract_refresh_token()
+    if not token:
+        # Try OIDC device flow as fallback
+        print(
+            "\n  Kiro: no existing credentials found.\n"
+            "  Trying AWS Builder ID login (free tier)...\n",
+            flush=True,
+        )
+        token = _oidc_login()
+
     if not token:
         return False
 
@@ -147,8 +289,6 @@ def _setup_gateway_env() -> bool:
 
 def _gateway_healthy() -> bool:
     """Check if the gateway responds on /v1/models."""
-    import urllib.request
-
     try:
         req = urllib.request.Request(
             f"http://localhost:{_GATEWAY_PORT}/v1/models",
@@ -220,7 +360,6 @@ def _start_gateway() -> bool:
         _PID_FILE.write_text(str(proc.pid))
 
         # Wait for gateway to be ready (up to 10s)
-        import time
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if _gateway_healthy():
@@ -246,6 +385,32 @@ def _is_kiro_cli_installed() -> bool:
     return False
 
 
+# ── Thinking mode ─────────────────────────────────────────────────────────
+
+_THINKING_MODELS = {
+    "claude-opus-4.7",
+    "claude-opus-4.6",
+    "claude-opus-4.5",
+    "claude-sonnet-4.6",
+    "claude-sonnet-4.5",
+    "claude-haiku-4.5",
+    "claude-sonnet-4",
+    "claude-3.7-sonnet",
+}
+
+
+def _add_thinking_variants(models: list[str]) -> list[str]:
+    """Append -thinking variants for Claude models that support it."""
+    extended = list(models)
+    for m in models:
+        base = m.removesuffix("-thinking")
+        if base in _THINKING_MODELS and f"{base}-thinking" not in extended:
+            extended.append(f"{base}-thinking")
+    return extended
+
+
+# ── Provider profile ─────────────────────────────────────────────────────
+
 class KiroProfile(ProviderProfile):
     """Kiro provider with lazy gateway setup in fetch_models."""
 
@@ -260,11 +425,19 @@ class KiroProfile(ProviderProfile):
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         """Pass reasoning config through to the gateway.
 
-        Kiro's Claude models (Opus 4.5+, Sonnet 4.5+, Haiku 4.5+) support
-        extended thinking. The gateway translates reasoning config into the
-        internal Kiro thinking format.
+        If the model name ends with -thinking, extended thinking is
+        automatically enabled with a default budget of 4096 tokens.
+        Explicit reasoning_config overrides default thinking settings.
         """
-        extra_body = {}
+        extra_body: dict[str, Any] = {}
+
+        model = context.get("model", "")
+        if model and model.endswith("-thinking"):
+            # Default thinking config when using -thinking suffix
+            if reasoning_config is None:
+                reasoning_config = {"enabled": True, "budget_tokens": 4096}
+            supports_reasoning = True
+
         if supports_reasoning and reasoning_config is not None:
             rc = dict(reasoning_config)
             if rc.get("enabled") is not False:
@@ -286,15 +459,14 @@ class KiroProfile(ProviderProfile):
         if not _gateway_installed():
             logger.info("Kiro: gateway not installed, cloning...")
             if not _clone_gateway():
-                return None  # fallback_models shown in picker
+                return None
 
-        # Step 2: configure auth from kiro-cli if available
+        # Step 2: configure auth
         if not _setup_gateway_env():
             print(
-                "\n  Kiro requires a one-time login. Run:\n"
-                "    kiro-cli login --use-device-flow\n"
-                "  Then pick Google or GitHub in the browser.\n"
-                "  After login, select Kiro again in /model.\n",
+                "\n  Kiro setup incomplete. Options:\n"
+                "    Pro (Opus models):  kiro-cli login --use-device-flow\n"
+                "    Free (Sonnet/Haiku): select Kiro again to start OIDC login\n",
                 flush=True,
             )
             return None
@@ -306,7 +478,10 @@ class KiroProfile(ProviderProfile):
                 return None
 
         # Step 4: fetch from gateway
-        return super().fetch_models(api_key=_PROXY_KEY, timeout=timeout)
+        models = super().fetch_models(api_key=_PROXY_KEY, timeout=timeout)
+        if models:
+            models = _add_thinking_variants(models)
+        return models
 
 
 # ── Provider profile ─────────────────────────────────────────────────────
@@ -314,10 +489,10 @@ class KiroProfile(ProviderProfile):
 kiro = KiroProfile(
     name="kiro",
     aliases=("kiro-pro",),
-    env_vars=("KIRO_PROXY_API_KEY",),  # gateway proxy key (auto-configured)
+    env_vars=("KIRO_PROXY_API_KEY",),
     display_name="Kiro",
     description=(
-        "Kiro Pro (Claude, MiniMax, GLM — OAuth login)"
+        "Kiro — Claude Opus, Sonnet, Haiku (Pro + free tier)"
     ),
     signup_url="https://kiro.dev",
     base_url=_GATEWAY_URL,
@@ -335,11 +510,9 @@ kiro = KiroProfile(
 register_provider(kiro)
 
 # ── Pre-warm: ensure proxy key is available (prevents API key prompt) ─────
-# Force-set in current process env — must override empty string from .env
 if not os.environ.get("KIRO_PROXY_API_KEY"):
     os.environ["KIRO_PROXY_API_KEY"] = _PROXY_KEY
 
-# Ensure persistence in .env for future restarts
 _ENV_PATH = Path.home() / ".hermes" / ".env"
 try:
     if _ENV_PATH.exists():
@@ -350,19 +523,14 @@ try:
                 f.write(f"\nKIRO_PROXY_API_KEY={_PROXY_KEY}\n")
             logger.info("Kiro: added KIRO_PROXY_API_KEY to .env")
 except Exception:
-    pass  # OS/env issue — non-critical
+    pass
 
 # ── Pre-warm: attempt setup at import time (non-blocking) ─────────────────
 if _gateway_installed():
     if _setup_gateway_env():
         threading.Thread(target=_start_gateway, daemon=True).start()
     elif not _gateway_healthy() and _KIRO_CLI_DB.exists():
-        # Kiro-cli exists but no token — user needs to login
-        pass  # quiet — fetch_models will print instructions when called
+        pass
     elif not _KIRO_CLI_DB.exists() and not _is_kiro_cli_installed():
-        print(
-            "\n  Kiro provider loaded but kiro-cli is not installed.\n"
-            "  Install: curl -fsSL https://cli.kiro.dev/install | bash\n"
-            "  Then: kiro-cli login --use-device-flow\n",
-            flush=True,
-        )
+        # No kiro-cli — OIDC will be offered in fetch_models
+        pass
