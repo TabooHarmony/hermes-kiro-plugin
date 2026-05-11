@@ -40,12 +40,41 @@ _KIRO_CLI_DB = Path.home() / ".local" / "share" / "kiro-cli" / "data.sqlite3"
 _GATEWAY_CLONE_LOCK = threading.Lock()
 
 
-def _extract_refresh_token() -> str | None:
-    """Extract refresh token from kiro-cli SQLite database.
+_CREDS_JSON = _GATEWAY_DIR / "credentials.json"
 
-    Prioritizes social login (Google/GitHub) over OIDC (Builder ID).
-    Social tokens work for the full model lineup including Opus 4.7.
+
+def _extract_refresh_token_from_creds_json() -> str | None:
+    """Extract the most recent refresh token from credentials.json.
+
+    The gateway persists rotated refresh tokens here. This is often fresher
+    than the kiro-cli SQLite token (which may have been consumed by the
+    gateway and is now stale).
     """
+    if not _CREDS_JSON.exists():
+        return None
+    try:
+        data = json.loads(_CREDS_JSON.read_text())
+        if isinstance(data, list) and data:
+            token = data[0].get("refresh_token")
+            if token and len(token) > 20:
+                logger.debug("Kiro: extracted refresh token from credentials.json")
+                return token
+    except Exception as e:
+        logger.debug("Kiro: failed to read credentials.json: %s", e)
+    return None
+
+
+def _extract_refresh_token() -> str | None:
+    """Extract refresh token — credentials.json first, then kiro-cli SQLite.
+
+    credentials.json holds rotated tokens persisted by the gateway, so it's
+    always fresher than the SQLite login token (which may be single-use
+    consumed). Falls back to SQLite for first-time setup.
+    """
+    token = _extract_refresh_token_from_creds_json()
+    if token:
+        return token
+
     if not _KIRO_CLI_DB.exists():
         return None
 
@@ -68,8 +97,28 @@ def _extract_refresh_token() -> str | None:
 
 
 def _setup_gateway_env() -> bool:
-    """Ensure gateway .env has REFRESH_TOKEN. Returns True if configured."""
+    """Ensure gateway .env has REFRESH_TOKEN. Returns True if configured.
+
+    Checks credentials.json first (rotated tokens persisted by the gateway),
+    then falls back to kiro-cli SQLite. If credentials.json has a fresher
+    token than .env, the .env is updated.
+    """
     env_path = _GATEWAY_DIR / ".env"
+
+    # Check if credentials.json has a rotated token that differs from .env
+    creds_token = _extract_refresh_token_from_creds_json()
+    if creds_token and env_path.exists():
+        content = env_path.read_text()
+        if f'REFRESH_TOKEN="{creds_token}"' not in content:
+            # credentials.json has a rotated token — sync it to .env
+            import re
+            content = re.sub(
+                r'REFRESH_TOKEN="[^"]*"',
+                f'REFRESH_TOKEN="{creds_token}"',
+                content,
+            )
+            env_path.write_text(content)
+            logger.info("Kiro: synced rotated token from credentials.json to .env")
 
     if env_path.exists():
         content = env_path.read_text()
@@ -91,7 +140,7 @@ def _setup_gateway_env() -> bool:
         f'DEBUG_MODE=errors\n'
         f'TRUNCATION_RECOVERY=true\n'
     )
-    logger.info("Kiro: gateway .env configured from kiro-cli session")
+    logger.info("Kiro: gateway .env configured")
     return True
 
 
