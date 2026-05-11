@@ -1,6 +1,8 @@
 # Hermes Kiro Plugin
 
-Native model-provider plugin for Kiro Pro — Claude Opus 4.7, Sonnet 4.6, DeepSeek 3.2, and more through your existing Kiro subscription. Appears directly in the `hermes model` picker. No Docker required.
+Native model-provider plugin for Kiro Pro — Claude Opus 4.7, Sonnet 4.6, DeepSeek 3.2, and more. Appears directly in `hermes model`. No Docker required.
+
+Requires Kiro Pro ($20/mo via Google or GitHub social login). Builder ID / free tier is not supported — we tested it and the OIDC tokens get 403'd by Kiro's API.
 
 Built on [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway), the first project to bridge Kiro's models into Hermes. This plugin takes that concept native — no containers, no manual `hermes config set` commands. Select Kiro from the model picker and the gateway starts automatically.
 
@@ -18,35 +20,21 @@ Or manually:
 git clone https://github.com/TabooHarmony/hermes-kiro-plugin ~/.hermes/plugins/model-providers/kiro
 ```
 
-## First-time setup
-
-Login once via kiro-cli (pick Google or GitHub):
+## Setup
 
 ```bash
 curl -fsSL https://cli.kiro.dev/install | bash
-kiro-cli login --use-device-flow
+kiro-cli login --use-device-flow     # pick Google or GitHub
+hermes model                         # select Kiro → pick a model
 ```
 
-After that, select Kiro from `hermes model` and everything configures itself:
-
-```
-hermes model
-  kiro → claude-opus-4.7
-```
-
-The plugin automatically:
-- Clones kiro-gateway
-- Extracts your refresh token from kiro-cli's local session
-- Starts the gateway on localhost:8000
-- Registers all available models
+The plugin auto-configures: clones kiro-gateway, extracts your refresh token, starts the proxy, registers models.
 
 ## Models
 
-Available models depend on your Kiro tier. Pro ($20/mo via Google/GitHub login) unlocks the Opus line.
-
-**Pro tier:** claude-opus-4.7, claude-opus-4.6, claude-opus-4.5, claude-sonnet-4.6
-
-**Free tier:** claude-sonnet-4.5, claude-sonnet-4, claude-haiku-4.5, claude-3.7-sonnet, deepseek-3.2, glm-5, minimax-m2.5, minimax-m2.1, qwen3-coder-next
+claude-opus-4.7   claude-sonnet-4.6   claude-sonnet-4.5   claude-haiku-4.5
+claude-opus-4.6   claude-sonnet-4     claude-3.7-sonnet    qwen3-coder-next
+claude-opus-4.5   deepseek-3.2        glm-5                minimax-m2.5 / m2.1
 
 ## Architecture
 
@@ -56,19 +44,16 @@ kiro-cli (auth)  →  kiro-gateway (:8000)  →  Hermes (provider: kiro)
   OAuth token                              OpenAI-compatible HTTP
 ```
 
-The gateway is [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway) — a FastAPI proxy that translates OpenAI chat completions into Kiro's AWS CodeWhisperer protocol.
-
 ## Credits
 
-- [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway) — first to connect Kiro models to Hermes. The Docker approach that proved the concept.
-- [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway) — the underlying gateway proxy.
-- [TabooHarmony](https://github.com/TabooHarmony) — native Hermes plugin packaging.
-- [NousResearch](https://github.com/NousResearch/hermes-agent) — the agent runtime this plugin extends.
+- [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway) — first to connect Kiro to Hermes. Proved the concept.
+- [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway) — underlying proxy.
+- [TabooHarmony](https://github.com/TabooHarmony) — native plugin packaging.
 
 ## Troubleshooting
 
-**Empty model list:** Run `kiro-cli login --use-device-flow`. Must pick Google or GitHub, not Builder ID.
+**Empty model list / connection errors:** Run `kiro-cli login --use-device-flow`. Must pick Google or GitHub.
 
-**No Opus models:** Requires Pro subscription via social login.
+**Gateway crash:** Token stale. Re-run login.
 
-**Gateway won't start:** Token may be stale. Re-run the login command.
+**Builder ID / free tier:** Not supported. Kiro's API returns 403 on OIDC tokens from Builder ID accounts.
