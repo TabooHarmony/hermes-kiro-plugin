@@ -1,66 +1,74 @@
 # Hermes Kiro Plugin
 
-Claude Opus 4.7, Sonnet 4.6, DeepSeek 3.2, and more via your Kiro Pro subscription.
+Native model-provider plugin for Kiro Pro — Claude Opus 4.7, Sonnet 4.6, DeepSeek 3.2, and more through your existing Kiro subscription. Appears directly in the `hermes model` picker. No Docker required.
 
-## Setup
+Built on [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway), the first project to bridge Kiro's models into Hermes. This plugin takes that concept native — no containers, no manual `hermes config set` commands. Select Kiro from the model picker and the gateway starts automatically.
 
-### 1. One-time login
+## Install
+
+One command:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/TabooHarmony/hermes-kiro-plugin/master/install.sh | bash
+```
+
+Or manually:
+
+```bash
+git clone https://github.com/TabooHarmony/hermes-kiro-plugin ~/.hermes/plugins/model-providers/kiro
+```
+
+## First-time setup
+
+Login once via kiro-cli (pick Google or GitHub):
 
 ```bash
 curl -fsSL https://cli.kiro.dev/install | bash
 kiro-cli login --use-device-flow
 ```
 
-Open the URL it prints. Pick **Google** or **GitHub** — not Builder ID.
+After that, select Kiro from `hermes model` and everything configures itself:
 
-### 2. Install the plugin
-
-```bash
-mkdir -p ~/.hermes/plugins/model-providers/kiro
-cp __init__.py plugin.yaml ~/.hermes/plugins/model-providers/kiro/
 ```
-
-### 3. Select Kiro
-
-```bash
 hermes model
-# pick Kiro → pick a model
+  kiro → claude-opus-4.7
 ```
 
-The gateway auto-clones, configures, and starts on first use.
+The plugin automatically:
+- Clones kiro-gateway
+- Extracts your refresh token from kiro-cli's local session
+- Starts the gateway on localhost:8000
+- Registers all available models
 
 ## Models
 
-| Model | Tier |
-|---|---|
-| claude-opus-4.7 | Pro |
-| claude-opus-4.6 | Pro |
-| claude-opus-4.5 | Pro |
-| claude-sonnet-4.6 | Pro |
-| claude-sonnet-4.5 | Free+Pro |
-| claude-haiku-4.5 | Free+Pro |
-| claude-sonnet-4 | Free+Pro |
-| claude-3.7-sonnet | Free+Pro |
-| deepseek-3.2 | Free+Pro |
-| glm-5 | Free+Pro |
-| minimax-m2.5 | Free+Pro |
-| minimax-m2.1 | Free+Pro |
-| qwen3-coder-next | Free+Pro |
+Available models depend on your Kiro tier. Pro ($20/mo via Google/GitHub login) unlocks the Opus line.
 
-Pro requires Google or GitHub social login ($20/mo). Builder ID = Free tier only.
+**Pro tier:** claude-opus-4.7, claude-opus-4.6, claude-opus-4.5, claude-sonnet-4.6
 
-## How it works
+**Free tier:** claude-sonnet-4.5, claude-sonnet-4, claude-haiku-4.5, claude-3.7-sonnet, deepseek-3.2, glm-5, minimax-m2.5, minimax-m2.1, qwen3-coder-next
+
+## Architecture
 
 ```
-kiro-cli --→ kiro-gateway (:8000/v1) --→ Hermes
+kiro-cli (auth)  →  kiro-gateway (:8000)  →  Hermes (provider: kiro)
+     ↑                                              ↑
+  OAuth token                              OpenAI-compatible HTTP
 ```
 
-The plugin auto-clones [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway), extracts your refresh token from kiro-cli's local session, and starts the gateway when you select Kiro.
+The gateway is [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway) — a FastAPI proxy that translates OpenAI chat completions into Kiro's AWS CodeWhisperer protocol.
+
+## Credits
+
+- [EMRD95/Kiro-Hermes-Gateway](https://github.com/EMRD95/Kiro-Hermes-Gateway) — first to connect Kiro models to Hermes. The Docker approach that proved the concept.
+- [jwadow/kiro-gateway](https://github.com/jwadow/kiro-gateway) — the underlying gateway proxy.
+- [TabooHarmony](https://github.com/TabooHarmony) — native Hermes plugin packaging.
+- [NousResearch](https://github.com/NousResearch/hermes-agent) — the agent runtime this plugin extends.
 
 ## Troubleshooting
 
-**Empty model list or connection errors:** Run `kiro-cli login --use-device-flow` first. Pick Google or GitHub, not Builder ID.
+**Empty model list:** Run `kiro-cli login --use-device-flow`. Must pick Google or GitHub, not Builder ID.
 
 **No Opus models:** Requires Pro subscription via social login.
 
-**Gateway crash:** Token stale. Re-run the login command.
+**Gateway won't start:** Token may be stale. Re-run the login command.

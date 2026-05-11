@@ -1,5 +1,6 @@
 name: kiro
 kind: model-provider
-version: 0.2.0
-description: Kiro — Claude Opus 4.7, Sonnet 4.6, DeepSeek 3.2, and more via Kiro Pro subscription. Auto-configures from kiro-cli social login.
-author: Hermes community
+version: 1.0.0
+description: Kiro — Claude Opus 4.7, Sonnet 4.6, DeepSeek 3.2, and more via Kiro Pro. Auto-configures from kiro-cli social login. No Docker required.
+author: TabooHarmony
+homepage: https://github.com/TabooHarmony/hermes-kiro-plugin
